@@ -8,7 +8,7 @@ function Page() {
   const handleLogin = () => {
     const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/linkedin/callback`;
     const state = Math.random().toString(36).slice(2);
-    const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.NEXT_PUBLIC_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&state=${state}`;
+    const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.NEXT_PUBLIC_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=r_liteprofile%20r_emailaddress&state=${state}`;
 
     window.location.href = authUrl;
   };
