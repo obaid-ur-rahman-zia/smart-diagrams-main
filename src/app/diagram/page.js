@@ -125,7 +125,7 @@ function Page() {
   const formik = useFormik({
     initialValues: {
       method: "",
-      aiModel: "Smart Graph",
+      aiModel: "Open AI",
       diagramType: "Flowchart",
       textOrSyntax: "",
       file: null,
