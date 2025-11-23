@@ -20,6 +20,12 @@ import {
   Select,
   MenuItem,
   FormHelperText,
+  FormControlLabel,
+  Checkbox,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
@@ -44,6 +50,7 @@ import ReactFlow, {
   StepEdge,
   updateEdge,
   useReactFlow,
+  NodeResizer,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { useStore } from "@/store";
@@ -58,7 +65,10 @@ import {
 import { FaServer } from "react-icons/fa";
 
 const NodeActionsContext = React.createContext({
-  detachService: () => {},
+  detachService: () => { },
+  resizeNode: () => { },
+  isResizing: false,
+  setIsResizing: () => { },
 });
 
 const GroupHoverContext = React.createContext({
@@ -164,8 +174,11 @@ const buildConnectionRegex = (edgeLike) => {
 
 const GroupNode = ({ data, selected }) => {
   const { hoveredGroupId } = useContext(GroupHoverContext);
+  const { isResizing, setIsResizing, resizeNode } = useContext(NodeActionsContext);
+  const [showResizer, setShowResizer] = useState(false);
   const groupRef = useRef(null);
   const wrapperRef = useRef(null);
+  const resizeAnchorRef = useRef({ left: false, top: false });
   const pointerStateRef = useRef({
     active: false,
     wrapper: null,
@@ -230,7 +243,8 @@ const GroupNode = ({ data, selected }) => {
     if (!underlying) return false;
 
     const updater = underlying.closest(".react-flow__edgeupdater");
-    const targetEdge = updater || underlying.closest(".react-flow__edge");
+    const targetPath = underlying.closest(".react-flow__edge-path");
+    const targetEdge = updater || targetPath || underlying.closest(".react-flow__edge");
 
     if (!targetEdge) {
       wrapper.style.cursor = "";
@@ -268,10 +282,10 @@ const GroupNode = ({ data, selected }) => {
         event.type,
         eventInit
       );
-      targetEdge.dispatchEvent(syntheticPointer);
+      (targetPath || targetEdge)?.dispatchEvent(syntheticPointer);
     } else {
       const syntheticMouse = new MouseEvent(event.type, eventInit);
-      targetEdge.dispatchEvent(syntheticMouse);
+      (targetPath || targetEdge)?.dispatchEvent(syntheticMouse);
     }
 
     const pointerToMouseEventMap = {
@@ -286,7 +300,12 @@ const GroupNode = ({ data, selected }) => {
       (event.pointerType === "mouse" || event.pointerType === undefined)
     ) {
       const mouseEvent = new MouseEvent(mouseEventType, eventInit);
-      targetEdge.dispatchEvent(mouseEvent);
+      (targetPath || targetEdge)?.dispatchEvent(mouseEvent);
+    }
+
+    if (event.type === "click") {
+      const clickEvent = new MouseEvent("click", eventInit);
+      (targetPath || targetEdge)?.dispatchEvent(clickEvent);
     }
 
     if (event.type === "pointerdown" && updater) {
@@ -297,10 +316,8 @@ const GroupNode = ({ data, selected }) => {
       state.wrapper = wrapper;
       const pointerId = typeof event.pointerId === "number" ? event.pointerId : -1;
       state.pointerId = pointerId;
-      state.capturedTarget = interactiveTarget;
       if (pointerId >= 0) {
         wrapper.releasePointerCapture?.(pointerId);
-        interactiveTarget?.setPointerCapture?.(pointerId);
       }
     }
 
@@ -408,9 +425,41 @@ const GroupNode = ({ data, selected }) => {
         boxShadow: isHovered
           ? "0 0 12px rgba(0,0,0,0.25)"
           : "0 1px 3px rgba(0,0,0,0.3)",
-        pointerEvents: "none",
+        pointerEvents: "auto",
       }}
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const dx = Math.min(e.clientX - rect.left, rect.right - e.clientX);
+        const dy = Math.min(e.clientY - rect.top, rect.bottom - e.clientY);
+        setShowResizer(Math.min(dx, dy) <= 10);
+      }}
+      onMouseLeave={() => setShowResizer(false)}
     >
+        <NodeResizer
+          isVisible={showResizer}
+          keepAspectRatio={!!data?.customStyle?.lockAspect}
+          lineStyle={{ border: "1px solid #000000", pointerEvents: "auto", zIndex: 1000 }}
+          handleStyle={{ width: 8, height: 8, borderRadius: 0, background: "#000000", cursor: "nwse-resize", zIndex: 1001 }}
+          onResize={(event, params) => {
+            setIsResizing(true);
+            const h = event?.target?.closest?.(".react-flow__resize-handle");
+            const anchor = h
+              ? { left: h.classList.contains("left"), top: h.classList.contains("top") }
+              : resizeAnchorRef.current;
+            resizeNode(data.groupData.id, params.width, params.height, anchor);
+          }}
+          onResizeStart={(event) => {
+            setIsResizing(true);
+            const h = event?.target?.closest?.(".react-flow__resize-handle");
+            resizeAnchorRef.current = h ? { left: h.classList.contains("left"), top: h.classList.contains("top") } : { left: false, top: false };
+          }}
+          onResizeEnd={(event, params) => {
+            setIsResizing(false);
+            const anchor = resizeAnchorRef.current;
+            resizeNode(data.groupData.id, params.width, params.height, anchor);
+            resizeAnchorRef.current = { left: false, top: false };
+          }}
+        />
       <div
         data-group-interactive="true"
         style={{
@@ -540,8 +589,10 @@ const GroupNode = ({ data, selected }) => {
 };
 
 const ServiceNode = ({ data, selected }) => {
-  const { detachService } = useContext(NodeActionsContext);
+  const { detachService, isResizing, setIsResizing, resizeNode } = useContext(NodeActionsContext);
   const serviceInfo = detectServiceType(data.serviceData.type);
+  const [showResizer, setShowResizer] = useState(false);
+  const resizeAnchorRef = useRef({ left: false, top: false });
 
   const getServiceStyle = (serviceInfo) => {
     const baseStyle = {
@@ -612,8 +663,8 @@ const ServiceNode = ({ data, selected }) => {
         border: `${style.borderWidth || "2px"} ${style.borderStyle} ${style.borderColor
           }`,
         borderRadius: "8px",
-        width: "180px",
-        minHeight: "100px",
+        width: "100%",
+        height: "100%",
         textAlign: "center",
         boxShadow: selected
           ? "0 4px 8px rgba(0,0,0,0.3)"
@@ -627,7 +678,40 @@ const ServiceNode = ({ data, selected }) => {
         alignItems: "center",
         transition: "all 0.2s ease",
       }}
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const dx = Math.min(e.clientX - rect.left, rect.right - e.clientX);
+        const dy = Math.min(e.clientY - rect.top, rect.bottom - e.clientY);
+        setShowResizer(Math.min(dx, dy) <= 10);
+      }}
+      onMouseLeave={() => setShowResizer(false)}
     >
+      <NodeResizer
+        isVisible={showResizer}
+        keepAspectRatio={!!data?.customStyle?.lockAspect}
+        lineStyle={{ border: `1px solid ${style.borderColor || serviceInfo.color}`, pointerEvents: "auto", zIndex: 1000 }}
+        handleStyle={{ width: 8, height: 8, borderRadius: 0, background: style.borderColor || serviceInfo.color, cursor: "nwse-resize", zIndex: 1001 }}
+        onResize={(event, params) => {
+          setIsResizing(true);
+          const h = event?.target?.closest?.(".react-flow__resize-handle");
+          const anchor = h
+            ? { left: h.classList.contains("left"), top: h.classList.contains("top") }
+            : resizeAnchorRef.current;
+          resizeNode(data.serviceData.id, params.width, params.height, anchor);
+        }}
+        onResizeStart={(event) => {
+          setIsResizing(true);
+          const h = event?.target?.closest?.(".react-flow__resize-handle");
+          resizeAnchorRef.current = h ? { left: h.classList.contains("left"), top: h.classList.contains("top") } : { left: false, top: false };
+        }}
+        onResizeEnd={(event, params) => {
+          setIsResizing(false);
+          const anchor = resizeAnchorRef.current;
+          resizeNode(data.serviceData.id, params.width, params.height, anchor);
+          resizeAnchorRef.current = { left: false, top: false };
+        }}
+      />
+      <div data-service-interactive="true" style={{ width: "100%", height: "100%" }}>
       {data?.serviceData?.group && (
         <div
           style={{
@@ -741,6 +825,7 @@ const ServiceNode = ({ data, selected }) => {
           />
         </React.Fragment>
       ))}
+      </div>
     </div>
   );
 };
@@ -1024,28 +1109,51 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
   const [statusMessage, setStatusMessage] = useState("");
   const [hoveredGroupId, setHoveredGroupId] = useState(null);
   const updatingEdgeIdRef = useRef(null);
-
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
+  const originalDragPosRef = useRef(new Map());
+  const positionSaveTimersRef = useRef(new Map());
+  const suppressSavesRef = useRef(false);
+  const historyApplyingRef = useRef(false);
+  const resizeAnchorRef = useRef({ left: false, top: false });
+  const [moveDialog, setMoveDialog] = useState({ open: false, serviceId: null, toGroupId: null, absolutePos: null, relativePos: null, cameFromGroupId: null });
+  const { isResizing, setIsResizing } = useContext(NodeActionsContext);
+  
   const [preventRerender, setPreventRerender] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   const reactFlow = useReactFlow();
   const codeRef = useRef(code);
   codeRef.current = code;
+  const internalCodeUpdateRef = useRef(false);
+  const lastCodeRef = useRef(code);
   const nodesRef = useRef([]);
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
 
   const pendingCodeFrame = useRef(null);
+  const dragStartCodeRef = useRef(null);
 
   const commitCodeUpdate = useCallback(
-    (nextCode) => {
+    (nextCode, options = { recordHistory: true, baselinePrev: null }) => {
       const finalCode = nextCode ?? "";
+      const prev = codeRef.current;
+      if (options.recordHistory && prev !== finalCode) {
+        undoStackRef.current.push(options.baselinePrev ?? prev);
+        redoStackRef.current = [];
+      }
       codeRef.current = finalCode;
 
       const applyUpdate = () => {
         pendingCodeFrame.current = null;
+        internalCodeUpdateRef.current = true;
         setCode(finalCode);
+        if (typeof window !== "undefined") {
+          try {
+            sessionStorage.setItem("code", finalCode);
+          } catch {}
+        }
       };
 
       if (typeof window === "undefined") {
@@ -1061,6 +1169,91 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
     },
     [setCode]
   );
+
+  useEffect(() => {
+    if (code !== lastCodeRef.current) {
+      if (historyApplyingRef.current) {
+        lastCodeRef.current = code;
+        return;
+      }
+      if (internalCodeUpdateRef.current) {
+        internalCodeUpdateRef.current = false;
+        lastCodeRef.current = code;
+        return;
+      }
+      const prev = lastCodeRef.current;
+      if (prev !== undefined) {
+        undoStackRef.current.push(prev);
+        redoStackRef.current = [];
+      }
+      lastCodeRef.current = code;
+    }
+  }, [code]);
+
+  const upsertNodePositionInCode = useCallback((nodeId, pos) => {
+    if (suppressSavesRef.current) return;
+    const currentCode = codeRef.current || "";
+    const lines = currentCode.split("\n");
+    const filtered = lines.filter(
+      (line) => !line.trim().startsWith(`%% Position: ${nodeId} = [`)
+    );
+
+    const roundedX = Math.round(pos.x);
+    const roundedY = Math.round(pos.y);
+    const positionLine = `%% Position: ${nodeId} = [${roundedX}, ${roundedY}]`;
+
+    const updated = [...filtered, positionLine];
+    commitCodeUpdate(updated.join("\n"), { recordHistory: false });
+  }, [commitCodeUpdate]);
+
+  useEffect(() => {
+    const handler = (e) => {
+      const key = e.key.toLowerCase();
+      const isUndo = (e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey;
+      const isRedo = (e.ctrlKey || e.metaKey) && (key === "y" || (key === "z" && e.shiftKey));
+      if (isUndo) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressSavesRef.current = true;
+        historyApplyingRef.current = true;
+        positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
+        positionSaveTimersRef.current.clear();
+        setPreventRerender(false);
+        const prev = undoStackRef.current.pop();
+        if (prev !== undefined) {
+          redoStackRef.current.push(codeRef.current);
+          commitCodeUpdate(prev);
+          setStatusMessage("Undo");
+          setTimeout(() => setStatusMessage(""), 1200);
+        }
+        setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+      } else if (isRedo) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressSavesRef.current = true;
+        historyApplyingRef.current = true;
+        positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
+        positionSaveTimersRef.current.clear();
+        setPreventRerender(false);
+        const next = redoStackRef.current.pop();
+        if (next !== undefined) {
+          undoStackRef.current.push(codeRef.current);
+          commitCodeUpdate(next);
+          setStatusMessage("Redo");
+          setTimeout(() => setStatusMessage(""), 1200);
+        }
+        setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    const el = chartRef?.current;
+    if (el) el.addEventListener("keydown", handler, true);
+    return () => {
+      window.removeEventListener("keydown", handler, true);
+      const el = chartRef?.current;
+      if (el) el.removeEventListener("keydown", handler, true);
+    };
+  }, [commitCodeUpdate, setPreventRerender, chartRef]);
 
   useEffect(() => {
     return () => {
@@ -1260,6 +1453,9 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       if (styleObj?.backgroundColor)
         parts.push(`bg:${styleObj.backgroundColor}`);
       if (styleObj?.borderStyle) parts.push(`borderStyle:${styleObj.borderStyle}`);
+      if (styleObj?.width) parts.push(`width:${styleObj.width}`);
+      if (styleObj?.height) parts.push(`height:${styleObj.height}`);
+      if (styleObj?.lockAspect) parts.push(`aspect:locked`);
 
       const styleLine = parts.length
         ? `%% NodeStyle: ${nodeId} = ${parts.join("; ")}`
@@ -1290,10 +1486,12 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       if (edgeLike?.style?.strokeDasharray) parts.push(`dash:${edgeLike.style.strokeDasharray}`);
       if (edgeLike?.type && edgeLike.type !== "custom") parts.push(`type:${edgeLike.type}`);
 
-      let arrow = "none";
-      if (edgeLike?.markerEnd?.type === MarkerType.ArrowClosed) arrow = "closed";
-      else if (edgeLike?.markerEnd?.type === MarkerType.Arrow) arrow = "open";
-      if (arrow && arrow !== "none") parts.push(`arrow:${arrow}`);
+      const arrowStart = edgeLike?.markerStart?.type === MarkerType.ArrowClosed ? "closed" : edgeLike?.markerStart?.type === MarkerType.Arrow ? "open" : "none";
+      const arrowEnd = edgeLike?.markerEnd?.type === MarkerType.ArrowClosed ? "closed" : edgeLike?.markerEnd?.type === MarkerType.Arrow ? "open" : "none";
+      if (arrowStart && arrowStart !== "none") parts.push(`arrowStart:${arrowStart}`);
+      if (arrowEnd && arrowEnd !== "none") parts.push(`arrowEnd:${arrowEnd}`);
+      if (edgeLike?.markerStart?.color) parts.push(`arrowStartColor:${edgeLike.markerStart.color}`);
+      if (edgeLike?.markerEnd?.color) parts.push(`arrowEndColor:${edgeLike.markerEnd.color}`);
 
       const styleLine = parts.length
         ? `%% EdgeStyle: ${key} = ${parts.join("; ")}`
@@ -1303,6 +1501,109 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       commitCodeUpdate(updated.join("\n"));
     },
     [commitCodeUpdate]
+  );
+
+  const resizeNode = useCallback((nodeId, width, height, anchor) => {
+    const newW = Number(width);
+    const newH = Number(height);
+    setNodes((current) =>
+      current.map((n) => {
+        if (n.id !== nodeId) return n;
+        const rfNode = reactFlow?.getNode?.(nodeId);
+        const measuredW = rfNode?.measured?.width ?? rfNode?.width;
+        const measuredH = rfNode?.measured?.height ?? rfNode?.height;
+        const prevW = n.width ?? n.style?.width ?? measuredW ?? newW;
+        const prevH = n.height ?? n.style?.height ?? measuredH ?? newH;
+        const deltaW = newW - prevW;
+        const deltaH = newH - prevH;
+        const adjustX = anchor?.left ? -deltaW : 0;
+        const adjustY = anchor?.top ? -deltaH : 0;
+        return {
+          ...n,
+          position: {
+            x: (n.position?.x || 0) + adjustX,
+            y: (n.position?.y || 0) + adjustY,
+          },
+          style: { ...(n.style || {}), width: newW, height: newH },
+          width: newW,
+          height: newH,
+        };
+      })
+    );
+    upsertNodeStyleInCode(nodeId, { width: Math.round(newW), height: Math.round(newH) });
+
+    const resized = nodesRef.current.find((n) => n.id === nodeId);
+    if (resized?.type === "group") {
+      const groupSize = { width: newW, height: newH };
+      setNodes((current) =>
+        current.map((n) => {
+          if (n.parentNode === nodeId && n.type === "service") {
+            const nodeSize = getNodeDimensions(n.id, SERVICE_NODE_SIZE);
+            const padding = 20;
+            const maxX = Math.max(padding, groupSize.width - nodeSize.width - padding);
+            const maxY = Math.max(padding, groupSize.height - nodeSize.height - padding);
+            const clampedX = Math.min(Math.max(n.position.x, padding), maxX);
+            const clampedY = Math.min(Math.max(n.position.y, padding), maxY);
+            if (clampedX !== n.position.x || clampedY !== n.position.y) {
+              return { ...n, position: { x: clampedX, y: clampedY } };
+            }
+          }
+          return n;
+        })
+      );
+      setTimeout(() => {
+        saveNodePositionsToCode(nodesRef.current);
+      }, 50);
+    }
+  }, [setNodes, upsertNodeStyleInCode, getNodeDimensions]);
+
+  const handleNodesChange = useCallback(
+    (changes) => {
+      onNodesChange(changes);
+      if (suppressSavesRef.current) return;
+      const resizedIds = changes
+        .filter((ch) => ch.type === "dimensions")
+        .map((ch) => ch.id);
+      if (resizedIds.length) {
+        setTimeout(() => {
+          resizedIds.forEach((id) => {
+            const rfNode = reactFlow?.getNode?.(id);
+            const width = rfNode?.measured?.width ?? rfNode?.width;
+            const height = rfNode?.measured?.height ?? rfNode?.height;
+            if (width && height) {
+              upsertNodeStyleInCode(id, {
+                width: Math.round(width),
+                height: Math.round(height),
+              });
+              const resizedNode = nodesRef.current.find((n) => n.id === id);
+              if (resizedNode?.type === "group") {
+                const groupSize = { width, height };
+                setNodes((current) =>
+                  current.map((n) => {
+                    if (n.parentNode === id && n.type === "service") {
+                      const nodeSize = getNodeDimensions(n.id, SERVICE_NODE_SIZE);
+                      const padding = 20;
+                      const maxX = Math.max(padding, groupSize.width - nodeSize.width - padding);
+                      const maxY = Math.max(padding, groupSize.height - nodeSize.height - padding);
+                      const clampedX = Math.min(Math.max(n.position.x, padding), maxX);
+                      const clampedY = Math.min(Math.max(n.position.y, padding), maxY);
+                      if (clampedX !== n.position.x || clampedY !== n.position.y) {
+                        return { ...n, position: { x: clampedX, y: clampedY } };
+                      }
+                    }
+                    return n;
+                  })
+                );
+                setTimeout(() => {
+                  saveNodePositionsToCode(nodesRef.current);
+                }, 50);
+              }
+            }
+          });
+        }, 0);
+      }
+    },
+    [onNodesChange, reactFlow, upsertNodeStyleInCode, setNodes, getNodeDimensions]
   );
 
   const handleEdgeClick = useCallback(
@@ -1412,11 +1713,11 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       const filteredChanges =
         currentUpdatingId && changes.length
           ? changes.filter(
-              (change) =>
-                !(
-                  change.type === "remove" && change.id === currentUpdatingId
-                )
-            )
+            (change) =>
+              !(
+                change.type === "remove" && change.id === currentUpdatingId
+              )
+          )
           : changes;
 
       if (filteredChanges.length > 0) {
@@ -1589,6 +1890,9 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               if (k === "outline") style.outlineColor = v;
               else if (k === "bg") style.backgroundColor = v;
               else if (k === "borderStyle") style.borderStyle = v;
+              else if (k === "width") style.width = parseInt(v);
+              else if (k === "height") style.height = parseInt(v);
+              else if (k === "aspect" && v === "locked") style.lockAspect = true;
             });
           result.nodeStyles.set(id, style);
           continue;
@@ -1612,6 +1916,10 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               if (kTrim === "stroke") style.stroke = v;
               else if (kTrim === "dash") style.dash = v;
               else if (kTrim === "arrow") style.arrow = v;
+              else if (kTrim === "arrowStart") style.arrowStart = v;
+              else if (kTrim === "arrowEnd") style.arrowEnd = v;
+              else if (kTrim === "arrowStartColor") style.arrowStartColor = v;
+              else if (kTrim === "arrowEndColor") style.arrowEndColor = v;
               else if (kTrim === "type") style.type = v.toLowerCase();
             });
           result.edgeStyles.set(normKey, style);
@@ -1985,10 +2293,17 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           groupConnections
         );
 
-        const groupSize = calculateGroupSizeFromServicePositions(
+        let groupSize = calculateGroupSizeFromServicePositions(
           servicesInGroup,
           servicePositions
         );
+        const styleOverride = archData.nodeStyles.get(group.id);
+        if (styleOverride) {
+          groupSize = {
+            width: styleOverride.width || groupSize.width,
+            height: styleOverride.height || groupSize.height,
+          };
+        }
 
         return {
           group,
@@ -2072,6 +2387,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           style: entry.groupSize,
           draggable: true,
           selectable: true,
+          dragHandle: "[data-group-interactive='true']",
           width: entry.groupSize.width,
           height: entry.groupSize.height,
         };
@@ -2100,6 +2416,13 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
             draggable: true,
             parentNode: entry.group.id,
             extent: "parent",
+            dragHandle: "[data-service-interactive='true']",
+            style: archData.nodeStyles.get(service.id)?.width
+              ? {
+                width: archData.nodeStyles.get(service.id)?.width,
+                height: archData.nodeStyles.get(service.id)?.height,
+              }
+              : undefined,
           };
 
           nodes.push(serviceNode);
@@ -2133,6 +2456,13 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               customStyle: archData.nodeStyles.get(service.id) || undefined,
             },
             draggable: true,
+            dragHandle: "[data-service-interactive='true']",
+            style: archData.nodeStyles.get(service.id)?.width
+              ? {
+                width: archData.nodeStyles.get(service.id)?.width,
+                height: archData.nodeStyles.get(service.id)?.height,
+              }
+              : undefined,
           };
 
           nodes.push(serviceNode);
@@ -2165,14 +2495,24 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               strokeWidth: 2,
               strokeDasharray: styleConf?.dash || undefined,
             },
-            markerEnd:
-              styleConf?.arrow && styleConf.arrow.toLowerCase() !== "none"
+            markerStart:
+              styleConf?.arrowStart && styleConf.arrowStart.toLowerCase() !== "none"
                 ? {
                   type:
-                    styleConf.arrow.toLowerCase() === "closed"
+                    styleConf.arrowStart.toLowerCase() === "closed"
                       ? MarkerType.ArrowClosed
                       : MarkerType.Arrow,
-                  color: styleConf?.stroke || "#000000",
+                  color: styleConf?.arrowStartColor || styleConf?.stroke || "#000000",
+                }
+                : undefined,
+            markerEnd:
+              styleConf?.arrowEnd && styleConf.arrowEnd.toLowerCase() !== "none"
+                ? {
+                  type:
+                    styleConf.arrowEnd.toLowerCase() === "closed"
+                      ? MarkerType.ArrowClosed
+                      : MarkerType.Arrow,
+                  color: styleConf?.arrowEndColor || styleConf?.stroke || "#000000",
                 }
                 : undefined,
             interactionWidth: 30,
@@ -2184,14 +2524,15 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         }
       });
 
-      console.log('Final nodes:', nodes);
+      // console.log('Final nodes:', nodes);
       return { nodes, edges };
     },
     [calculateServicePositions, calculateGroupSizeFromServicePositions, adjustServicePositionsToGroup]
   );
 
   const saveNodePositionsToCode = useCallback(
-    (updatedNodes) => {
+    (updatedNodes, baselinePrev = null) => {
+      if (suppressSavesRef.current) return;
       if (isSaving) return;
 
       setIsSaving(true);
@@ -2222,20 +2563,15 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           });
 
           const updatedCode = newLines.join("\n");
-          commitCodeUpdate(updatedCode);
+          commitCodeUpdate(updatedCode, { recordHistory: !!baselinePrev, baselinePrev });
           setStatusMessage("Positions saved");
-
-          setPreventRerender(true);
-          setTimeout(() => {
-            setPreventRerender(false);
-            setIsSaving(false);
-          }, 1000);
+          setIsSaving(false);
 
         } catch (error) {
           console.error("Error saving positions:", error);
           setIsSaving(false);
         }
-      }, 500);
+      }, 200);
     },
     [commitCodeUpdate, isSaving]
   );
@@ -2255,18 +2591,18 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         const updatedNodes = currentNodes.map((node) =>
           node.id === serviceId
             ? {
-                ...node,
-                parentNode: undefined,
-                extent: undefined,
-                position: absolutePosition,
-                data: {
-                  ...node.data,
-                  serviceData: {
-                    ...node.data.serviceData,
-                    group: null,
-                  },
+              ...node,
+              parentNode: undefined,
+              extent: undefined,
+              position: absolutePosition,
+              data: {
+                ...node.data,
+                serviceData: {
+                  ...node.data.serviceData,
+                  group: null,
                 },
-              }
+              },
+            }
             : node
         );
 
@@ -2292,13 +2628,64 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
     ]
   );
 
+  const onNodeDragStart = useCallback((event, node) => {
+    const isResizeHandle = (() => {
+      const t = event?.target;
+      if (!t || typeof t.closest !== "function") return false;
+      const byClass = t.closest(".react-flow__resize-control") || t.closest(".react-flow__resize-handle") || t.closest(".react-flow__node-resizer") || t.closest("[class*='resize']") || t.closest("[class*='resizer']");
+      return !!byClass;
+    })();
+
+    if (isResizeHandle) {
+      event.preventDefault();
+      event.stopPropagation();
+      return false;
+    }
+
+    if (isResizing) {
+      event.preventDefault();
+      event.stopPropagation();
+      return false;
+    }
+    if (node?.type === "service") {
+      const snapshot = nodesRef.current;
+      const original = snapshot.find((n) => n.id === node.id);
+      if (original) {
+        const abs = getAbsoluteNodePosition(original, snapshot);
+        originalDragPosRef.current.set(node.id, {
+          parentNode: original.parentNode || null,
+          absolute: abs,
+          relative: { x: original.position?.x || 0, y: original.position?.y || 0 },
+        });
+      }
+    }
+    dragStartCodeRef.current = codeRef.current;
+    setPreventRerender(true);
+  }, [getAbsoluteNodePosition, isResizing]);
+
   const onNodeDrag = useCallback(
     (event, node) => {
+      if (isResizing) {
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      }
+
       setNodes((nds) =>
         nds.map((n) =>
           n.id === node.id ? { ...n, position: node.position } : n
         )
       );
+
+      const scheduleSave = (id, position) => {
+        const existing = positionSaveTimersRef.current.get(id);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+          upsertNodePositionInCode(id, position);
+          positionSaveTimersRef.current.delete(id);
+        }, 200);
+        positionSaveTimersRef.current.set(id, timer);
+      };
 
       if (node.type === "service") {
         const serviceSize = getNodeDimensions(node.id, SERVICE_NODE_SIZE);
@@ -2313,15 +2700,21 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           nodesRef.current
         );
         setHoveredGroupId(containingGroup ? containingGroup.id : null);
+        scheduleSave(node.id, node.position);
       } else {
         setHoveredGroupId(null);
+        scheduleSave(node.id, node.position);
       }
     },
-    [setNodes, getNodeDimensions, findContainingGroup]
+    [setNodes, getNodeDimensions, findContainingGroup, isResizing, upsertNodePositionInCode]
   );
-
   const onNodeDragStop = useCallback(
     (event, node) => {
+      const existing = positionSaveTimersRef.current.get(node.id);
+      if (existing) {
+        clearTimeout(existing);
+        positionSaveTimersRef.current.delete(node.id);
+      }
       setNodes((currentNodes) => {
         let updatedNodes = currentNodes.map((n) =>
           n.id === node.id ? { ...n, position: node.position } : n
@@ -2351,6 +2744,34 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               containingGroup,
               updatedNodes
             );
+            // If still inside original parent but outside bounds, detach
+            if (draggedNode.parentNode === containingGroup.id) {
+              const padding = 20;
+              const withinX =
+                absolutePosition.x >= groupAbsolute.x + padding &&
+                absolutePosition.x + serviceSize.width <= groupAbsolute.x + (containingGroup.width || containingGroup.style?.width || GROUP_NODE_SIZE.width) - padding;
+              const withinY =
+                absolutePosition.y >= groupAbsolute.y + padding &&
+                absolutePosition.y + serviceSize.height <= groupAbsolute.y + (containingGroup.height || containingGroup.style?.height || GROUP_NODE_SIZE.height) - padding;
+              if (!withinX || !withinY) {
+                updatedNodes = updatedNodes.map((n) =>
+                  n.id === draggedNode.id
+                    ? {
+                        ...n,
+                        parentNode: undefined,
+                        extent: undefined,
+                        position: absolutePosition,
+                        data: { ...n.data, serviceData: { ...n.data.serviceData, group: null } },
+                      }
+                    : n
+                );
+                updateServiceGroupInCode(draggedNode.id, null);
+                setTimeout(() => saveNodePositionsToCode(updatedNodes, dragStartCodeRef.current), 50);
+                setStatusMessage("Detached from group");
+                setTimeout(() => setStatusMessage(""), 1200);
+                return updatedNodes;
+              }
+            }
             const relativePosition = {
               x: absolutePosition.x - groupAbsolute.x,
               y: absolutePosition.y - groupAbsolute.y,
@@ -2360,30 +2781,21 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               containingGroup,
               serviceSize
             );
-
             if (draggedNode.parentNode !== containingGroup.id) {
-              updateServiceGroupInCode(draggedNode.id, containingGroup.id);
+              setMoveDialog({
+                open: true,
+                serviceId: draggedNode.id,
+                toGroupId: containingGroup.id,
+                absolutePos: absolutePosition,
+                relativePos: clamped,
+                cameFromGroupId: draggedNode.parentNode || null,
+              });
+            } else {
+              updatedNodes = updatedNodes.map((n) =>
+                n.id === draggedNode.id ? { ...n, position: clamped } : n
+              );
             }
-
-            updatedNodes = updatedNodes.map((n) =>
-              n.id === draggedNode.id
-                ? {
-                    ...n,
-                    parentNode: containingGroup.id,
-                    extent: "parent",
-                    position: clamped,
-                    data: {
-                      ...n.data,
-                      serviceData: {
-                        ...n.data.serviceData,
-                        group: containingGroup.id,
-                      },
-                    },
-                  }
-                : n
-            );
           } else if (draggedNode.parentNode) {
-            updateServiceGroupInCode(draggedNode.id, null);
             updatedNodes = updatedNodes.map((n) =>
               n.id === draggedNode.id
                 ? {
@@ -2391,26 +2803,24 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
                     parentNode: undefined,
                     extent: undefined,
                     position: absolutePosition,
-                    data: {
-                      ...n.data,
-                      serviceData: {
-                        ...n.data.serviceData,
-                        group: null,
-                      },
-                    },
+                    data: { ...n.data, serviceData: { ...n.data.serviceData, group: null } },
                   }
                 : n
             );
+            updateServiceGroupInCode(draggedNode.id, null);
+            setTimeout(() => saveNodePositionsToCode(updatedNodes, dragStartCodeRef.current), 50);
+            setStatusMessage("Detached from group");
+            setTimeout(() => setStatusMessage(""), 1200);
           }
         }
 
-        setTimeout(() => {
-          saveNodePositionsToCode(updatedNodes);
-        }, 100);
+        saveNodePositionsToCode(updatedNodes, dragStartCodeRef.current);
 
         return updatedNodes;
       });
+      dragStartCodeRef.current = null;
       setHoveredGroupId(null);
+      setTimeout(() => setPreventRerender(false), 100);
     },
     [
       saveNodePositionsToCode,
@@ -2423,6 +2833,70 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       setHoveredGroupId,
     ]
   );
+
+  const applyMoveDialogCancel = useCallback(() => {
+    const sId = moveDialog.serviceId;
+    const original = originalDragPosRef.current.get(sId);
+    if (!sId || !original) {
+      setMoveDialog({ open: false, serviceId: null, toGroupId: null, absolutePos: null, relativePos: null, cameFromGroupId: null });
+      return;
+    }
+    setNodes((current) => current.map((n) =>
+      n.id === sId
+        ? {
+          ...n,
+          parentNode: original.parentNode || undefined,
+          extent: original.parentNode ? "parent" : undefined,
+          position: original.parentNode ? original.relative : original.absolute,
+          data: { ...n.data, serviceData: { ...n.data.serviceData, group: original.parentNode || null } },
+        }
+        : n
+    ));
+    setTimeout(() => saveNodePositionsToCode(nodesRef.current, dragStartCodeRef.current), 50);
+    setMoveDialog({ open: false, serviceId: null, toGroupId: null, absolutePos: null, relativePos: null, cameFromGroupId: null });
+  }, [moveDialog, saveNodePositionsToCode, setNodes]);
+
+  const applyMoveDialogConfirm = useCallback(() => {
+    const sId = moveDialog.serviceId;
+    const toGroup = moveDialog.toGroupId;
+    const rel = moveDialog.relativePos;
+    const abs = moveDialog.absolutePos;
+    if (!sId) return;
+    setNodes((current) => current.map((n) =>
+      n.id === sId
+        ? toGroup
+          ? {
+            ...n,
+            parentNode: toGroup,
+            extent: "parent",
+            position: clampRelativePositionToGroup(rel, current.find((g) => g.id === toGroup), getNodeDimensions(n.id, SERVICE_NODE_SIZE)),
+            data: { ...n.data, serviceData: { ...n.data.serviceData, group: toGroup } },
+          }
+          : {
+            ...n,
+            parentNode: undefined,
+            extent: undefined,
+            position: abs,
+            data: { ...n.data, serviceData: { ...n.data.serviceData, group: null } },
+          }
+        : n
+    ));
+    updateServiceGroupInCode(sId, toGroup || null);
+    if (toGroup) {
+      const snapshot = nodesRef.current;
+      const groupNode = snapshot.find((n) => n.id === toGroup);
+      if (groupNode) {
+        const servicesInGroup = snapshot.filter((n) => n.type === "service" && n.parentNode === toGroup);
+        const servicePositions = new Map(servicesInGroup.map((svc) => [svc.id, svc.position]));
+        const newSize = calculateGroupSizeFromServicePositions(servicesInGroup.map((s) => ({ id: s.id })), servicePositions);
+        setNodes((current) => current.map((n) => n.id === toGroup ? { ...n, style: { width: newSize.width, height: newSize.height }, width: newSize.width, height: newSize.height } : n));
+        upsertNodeStyleInCode(toGroup, { width: Math.round(newSize.width), height: Math.round(newSize.height) });
+      }
+    }
+    setTimeout(() => saveNodePositionsToCode(nodesRef.current, dragStartCodeRef.current), 50);
+    setMoveDialog({ open: false, serviceId: null, toGroupId: null, absolutePos: null, relativePos: null, cameFromGroupId: null });
+    dragStartCodeRef.current = null;
+  }, [moveDialog, clampRelativePositionToGroup, getNodeDimensions, updateServiceGroupInCode, saveNodePositionsToCode, setNodes]);
 
   const addNewGroup = useCallback(
     (position = { x: 100, y: 100 }) => {
@@ -2501,17 +2975,17 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
             y: verticalMargin + row * (serviceHeight + verticalSpacing),
           };
 
-          console.log("Service position in group:", {
-            groupPosition: groupNode.position,
-            relativePosition: finalPosition,
-            absolutePosition: {
-              x: groupNode.position.x + finalPosition.x,
-              y: groupNode.position.y + finalPosition.y,
-            },
-            servicesInGroup: servicesInGroup.length,
-            row,
-            col,
-          });
+          // console.log("Service position in group:", {
+          //   groupPosition: groupNode.position,
+          //   relativePosition: finalPosition,
+          //   absolutePosition: {
+          //     x: groupNode.position.x + finalPosition.x,
+          //     y: groupNode.position.y + finalPosition.y,
+          //   },
+          //   servicesInGroup: servicesInGroup.length,
+          //   row,
+          //   col,
+          // });
         } else {
           finalPosition = { x: 100, y: 100 };
         }
@@ -2615,11 +3089,11 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
 
   const updateNode = useCallback(
     (nodeId, newData, nodeType) => {
-      console.log("Updating node:", { nodeId, newData, nodeType });
+      // console.log("Updating node:", { nodeId, newData, nodeType });
       setPreventRerender(true);
 
       const currentCode = codeRef.current;
-      console.log("Current code before update:", currentCode);
+      // console.log("Current code before update:", currentCode);
 
       const lines = currentCode.split("\n");
       const newLines = [];
@@ -2628,22 +3102,22 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         const line = lines[i].trim();
 
         if (nodeType === "group" && line.startsWith(`group ${nodeId}`)) {
-          console.log("Found group to update:", line);
+          // console.log("Found group to update:", line);
           newLines.push(`group ${nodeId}(${newData.type})[${newData.label}]`);
-          console.log(
-            "Updated group to:",
-            `group ${nodeId}(${newData.type})[${newData.label}]`
-          );
+          // console.log(
+          //   "Updated group to:",
+          //   `group ${nodeId}(${newData.type})[${newData.label}]`
+          // );
         } else if (
           nodeType === "service" &&
           line.startsWith(`service ${nodeId}`)
         ) {
-          console.log("Found service to update:", line);
+          // console.log("Found service to update:", line);
           const inGroupMatch = line.match(/\s+in\s+(\w+)$/);
           const groupPart = inGroupMatch ? ` in ${inGroupMatch[1]}` : "";
           const updatedServiceLine = `service ${nodeId}(${newData.type})[${newData.label}]${groupPart}`;
           newLines.push(updatedServiceLine);
-          console.log("Updated service to:", updatedServiceLine);
+          // console.log("Updated service to:", updatedServiceLine);
         } else if (line.startsWith(`%% NodeStyle: ${nodeId}`)) {
           // skip old node style line; we'll append a new one below if needed
           continue;
@@ -2664,7 +3138,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       }
 
       const updatedCode = newLines.join("\n");
-      console.log("Code after update:", updatedCode);
+      // console.log("Code after update:", updatedCode);
 
       commitCodeUpdate(updatedCode);
 
@@ -2715,7 +3189,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           }
           return node;
         });
-        console.log("Nodes after update:", updatedNodes);
+        // console.log("Nodes after update:", updatedNodes);
         return updatedNodes;
       });
 
@@ -2723,7 +3197,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       setStatusMessage(`Updated ${nodeType}: ${nodeId}`);
 
       setTimeout(() => {
-        console.log("Re-enabling re-renders");
+        // console.log("Re-enabling re-renders");
         setPreventRerender(false);
       }, 2000);
 
@@ -2856,9 +3330,41 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
     [commitCodeUpdate, setEdges]
   );
 
+  const performUndo = useCallback(() => {
+    suppressSavesRef.current = true;
+    historyApplyingRef.current = true;
+    positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
+    positionSaveTimersRef.current.clear();
+    setPreventRerender(false);
+    const prev = undoStackRef.current.pop();
+    if (prev !== undefined) {
+      redoStackRef.current.push(codeRef.current);
+      commitCodeUpdate(prev);
+      setStatusMessage("Undo");
+      setTimeout(() => setStatusMessage(""), 1200);
+    }
+    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+  }, [commitCodeUpdate]);
+
+  const performRedo = useCallback(() => {
+    suppressSavesRef.current = true;
+    historyApplyingRef.current = true;
+    positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
+    positionSaveTimersRef.current.clear();
+    setPreventRerender(false);
+    const next = redoStackRef.current.pop();
+    if (next !== undefined) {
+      undoStackRef.current.push(codeRef.current);
+      commitCodeUpdate(next);
+      setStatusMessage("Redo");
+      setTimeout(() => setStatusMessage(""), 1200);
+    }
+    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+  }, [commitCodeUpdate]);
+
   useEffect(() => {
     if (code && typeof window !== "undefined" && !preventRerender) {
-      console.log("Initializing diagram from code...");
+      // console.log("Initializing diagram from code...");
       const initializeDiagram = () => {
         try {
           const archData = parseArchitectureCode(code);
@@ -2868,6 +3374,11 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           setNodes(flowNodes);
           setEdges(flowEdges);
           setSvg(null);
+          if (historyApplyingRef.current) {
+            // Clear suppression once the diagram reflects the applied history
+            historyApplyingRef.current = false;
+            suppressSavesRef.current = false;
+          }
         } catch (error) {
           console.error("Error initializing diagram:", error);
         }
@@ -2924,7 +3435,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       (node) => node.draggable === undefined || node.draggable === false
     );
     if (hasUndraggableNodes) {
-      console.log("Fixing undraggable nodes...");
+      // console.log("Fixing undraggable nodes...");
       setNodes((currentNodes) =>
         currentNodes.map((node) => ({
           ...node,
@@ -2945,6 +3456,21 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       }}
     >
       <StatusDisplay message={statusMessage} />
+
+      {moveDialog.open && (
+        <Dialog open onClose={applyMoveDialogCancel}>
+          <DialogTitle>Confirm Move</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">
+              Move service {moveDialog.serviceId} {moveDialog.cameFromGroupId ? `from ${moveDialog.cameFromGroupId}` : "from root"} {moveDialog.toGroupId ? `to ${moveDialog.toGroupId}` : "to root"}?
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={applyMoveDialogCancel}>Cancel</Button>
+            <Button variant="contained" onClick={applyMoveDialogConfirm}>Confirm</Button>
+          </DialogActions>
+        </Dialog>
+      )}
 
       {showEditPanel && selectedNode && (
         <EditPanel
@@ -3045,6 +3571,62 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               <MenuItem value="smoothstep">Smooth Step</MenuItem>
             </Select>
           </FormControl>
+
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={!!selectedEdge?.data?.bidirectional}
+                onChange={(e) => {
+                  const makeBi = e.target.checked;
+                  let updated = { ...selectedEdge };
+                  const stroke = updated?.style?.stroke || "#000000";
+                  if (makeBi) {
+                    const endType = updated?.markerEnd?.type;
+                    const startType = updated?.markerStart?.type;
+                    const commonType = endType || startType || MarkerType.Arrow;
+                    const endColor = updated?.markerEnd?.color;
+                    const startColor = updated?.markerStart?.color;
+                    const commonColor = endColor || startColor || stroke;
+                    const commonMarker = { type: commonType, color: commonColor };
+                    updated = {
+                      ...updated,
+                      data: { ...(updated.data || {}), bidirectional: true },
+                      markerStart: commonMarker,
+                      markerEnd: commonMarker,
+                    };
+                    setEdges((eds) =>
+                      eds.map((ed) =>
+                        ed.id === selectedEdge.id
+                          ? {
+                              ...ed,
+                              data: { ...(ed.data || {}), bidirectional: true },
+                              markerStart: commonMarker,
+                              markerEnd: commonMarker,
+                            }
+                          : ed
+                      )
+                    );
+                  } else {
+                    updated = {
+                      ...updated,
+                      data: { ...(updated.data || {}), bidirectional: false },
+                    };
+                    setEdges((eds) =>
+                      eds.map((ed) =>
+                        ed.id === selectedEdge.id
+                          ? { ...ed, data: { ...(ed.data || {}), bidirectional: false } }
+                          : ed
+                      )
+                    );
+                  }
+                  setSelectedEdge(updated);
+                  upsertEdgeStyleInCode(updated);
+                }}
+                size="small"
+              />
+            }
+            label="Bidirectional"
+          />
           <FormControl size="small" sx={{ minWidth: 120 }}>
             <InputLabel id="edge-color-label">Color</InputLabel>
             <Select
@@ -3062,6 +3644,9 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
                         markerEnd: ed.markerEnd
                           ? { ...ed.markerEnd, color: stroke }
                           : undefined,
+                        markerStart: ed.markerStart
+                          ? { ...ed.markerStart, color: stroke }
+                          : undefined,
                       }
                       : ed
                   )
@@ -3071,6 +3656,9 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
                   style: { ...(selectedEdge.style || {}), stroke },
                   markerEnd: selectedEdge.markerEnd
                     ? { ...selectedEdge.markerEnd, color: stroke }
+                    : undefined,
+                  markerStart: selectedEdge.markerStart
+                    ? { ...selectedEdge.markerStart, color: stroke }
                     : undefined,
                 };
                 setSelectedEdge(updated);
@@ -3086,6 +3674,84 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
                 "#6a1b9a",
                 "#455a64",
               ].map((c) => (
+                <MenuItem key={c} value={c}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Box sx={{ width: 14, height: 14, bgcolor: c, border: '1px solid #000', borderRadius: '2px' }} />
+                    <Typography sx={{ fontSize: 12 }}>{c}</Typography>
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 120 }}>
+            <InputLabel id="edge-start-color-label">Source Color</InputLabel>
+            <Select
+              labelId="edge-start-color-label"
+              label="Source Color"
+              value={selectedEdge?.markerStart?.color || selectedEdge?.style?.stroke || "#000000"}
+              onChange={(e) => {
+                const c = e.target.value;
+                const updatedStart = selectedEdge?.markerStart ? { ...selectedEdge.markerStart, color: c } : { type: MarkerType.Arrow, color: c };
+                let updated = { ...selectedEdge, markerStart: updatedStart };
+                const isBi = !!selectedEdge?.data?.bidirectional;
+                if (isBi) {
+                  updated = { ...updated, markerEnd: { ...(updated.markerEnd || {}), type: updatedStart.type, color: c } };
+                }
+                setEdges((eds) =>
+                  eds.map((ed) =>
+                    ed.id === selectedEdge.id
+                      ? {
+                          ...ed,
+                          markerStart: updatedStart,
+                          markerEnd: isBi ? { ...(ed.markerEnd || {}), type: updatedStart.type, color: c } : ed.markerEnd,
+                        }
+                      : ed
+                  )
+                );
+                setSelectedEdge(updated);
+                upsertEdgeStyleInCode(updated);
+              }}
+            >
+              {["#000000", "#d32f2f", "#1976d2", "#2e7d32", "#ed6c02", "#6a1b9a", "#455a64"].map((c) => (
+                <MenuItem key={c} value={c}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Box sx={{ width: 14, height: 14, bgcolor: c, border: '1px solid #000', borderRadius: '2px' }} />
+                    <Typography sx={{ fontSize: 12 }}>{c}</Typography>
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 120 }}>
+            <InputLabel id="edge-end-color-label">Target Color</InputLabel>
+            <Select
+              labelId="edge-end-color-label"
+              label="Target Color"
+              value={selectedEdge?.markerEnd?.color || selectedEdge?.style?.stroke || "#000000"}
+              onChange={(e) => {
+                const c = e.target.value;
+                const updatedEnd = selectedEdge?.markerEnd ? { ...selectedEdge.markerEnd, color: c } : { type: MarkerType.Arrow, color: c };
+                let updated = { ...selectedEdge, markerEnd: updatedEnd };
+                const isBi = !!selectedEdge?.data?.bidirectional;
+                if (isBi) {
+                  updated = { ...updated, markerStart: { ...(updated.markerStart || {}), type: updatedEnd.type, color: c } };
+                }
+                setEdges((eds) =>
+                  eds.map((ed) =>
+                    ed.id === selectedEdge.id
+                      ? {
+                          ...ed,
+                          markerEnd: updatedEnd,
+                          markerStart: isBi ? { ...(ed.markerStart || {}), type: updatedEnd.type, color: c } : ed.markerStart,
+                        }
+                      : ed
+                  )
+                );
+                setSelectedEdge(updated);
+                upsertEdgeStyleInCode(updated);
+              }}
+            >
+              {["#000000", "#d32f2f", "#1976d2", "#2e7d32", "#ed6c02", "#6a1b9a", "#455a64"].map((c) => (
                 <MenuItem key={c} value={c}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                     <Box sx={{ width: 14, height: 14, bgcolor: c, border: '1px solid #000', borderRadius: '2px' }} />
@@ -3128,10 +3794,51 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
             </Select>
           </FormControl>
           <FormControl size="small">
-            <InputLabel id="arrow-type-label">Arrow</InputLabel>
+            <InputLabel id="arrow-start-label">Source Arrow</InputLabel>
             <Select
-              labelId="arrow-type-label"
-              label="Arrow"
+              labelId="arrow-start-label"
+              label="Source Arrow"
+              value={
+                selectedEdge?.markerStart?.type === MarkerType.ArrowClosed
+                  ? "closed"
+                  : selectedEdge?.markerStart?.type === MarkerType.Arrow
+                    ? "open"
+                    : "none"
+              }
+              onChange={(e) => {
+                const val = e.target.value;
+                const markerStart = val === "none" ? undefined : { type: val === "closed" ? MarkerType.ArrowClosed : MarkerType.Arrow, color: selectedEdge?.style?.stroke || "#000000" };
+                const isBi = !!selectedEdge?.data?.bidirectional;
+                let updated = { ...selectedEdge, markerStart };
+                if (isBi) {
+                  updated = { ...updated, markerEnd: markerStart ? { type: markerStart.type, color: markerStart.color } : undefined };
+                }
+                setEdges((eds) =>
+                  eds.map((ed) =>
+                    ed.id === selectedEdge.id
+                      ? {
+                          ...ed,
+                          markerStart,
+                          markerEnd: isBi ? (markerStart ? { type: markerStart.type, color: markerStart.color } : undefined) : ed.markerEnd,
+                        }
+                      : ed
+                  )
+                );
+                setSelectedEdge(updated);
+                upsertEdgeStyleInCode(updated);
+              }}
+              sx={{ minWidth: 100 }}
+            >
+              <MenuItem value="none">None</MenuItem>
+              <MenuItem value="open">Open</MenuItem>
+              <MenuItem value="closed">Closed</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small">
+            <InputLabel id="arrow-end-label">Target Arrow</InputLabel>
+            <Select
+              labelId="arrow-end-label"
+              label="Target Arrow"
               value={
                 selectedEdge?.markerEnd?.type === MarkerType.ArrowClosed
                   ? "closed"
@@ -3141,18 +3848,23 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
               }
               onChange={(e) => {
                 const val = e.target.value;
-                const markerEnd =
-                  val === "none"
-                    ? undefined
-                    : {
-                      type:
-                        val === "closed" ? MarkerType.ArrowClosed : MarkerType.Arrow,
-                      color: selectedEdge?.style?.stroke || "#000000",
-                    };
+                const markerEnd = val === "none" ? undefined : { type: val === "closed" ? MarkerType.ArrowClosed : MarkerType.Arrow, color: selectedEdge?.style?.stroke || "#000000" };
+                const isBi = !!selectedEdge?.data?.bidirectional;
+                let updated = { ...selectedEdge, markerEnd };
+                if (isBi) {
+                  updated = { ...updated, markerStart: markerEnd ? { type: markerEnd.type, color: markerEnd.color } : undefined };
+                }
                 setEdges((eds) =>
-                  eds.map((ed) => (ed.id === selectedEdge.id ? { ...ed, markerEnd } : ed))
+                  eds.map((ed) =>
+                    ed.id === selectedEdge.id
+                      ? {
+                          ...ed,
+                          markerEnd,
+                          markerStart: isBi ? (markerEnd ? { type: markerEnd.type, color: markerEnd.color } : undefined) : ed.markerStart,
+                        }
+                      : ed
+                  )
                 );
-                const updated = { ...selectedEdge, markerEnd };
                 setSelectedEdge(updated);
                 upsertEdgeStyleInCode(updated);
               }}
@@ -3194,6 +3906,32 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         }}
       >
         <Button
+          variant="outlined"
+          size="small"
+          onClick={performUndo}
+          sx={{
+            borderColor: "#000000",
+            color: "#000000",
+            fontSize: "11px",
+            "&:hover": { borderColor: "#333333" },
+          }}
+        >
+          Undo
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={performRedo}
+          sx={{
+            borderColor: "#000000",
+            color: "#000000",
+            fontSize: "11px",
+            "&:hover": { borderColor: "#333333" },
+          }}
+        >
+          Redo
+        </Button>
+        <Button
           variant="contained"
           size="small"
           startIcon={<AddIcon />}
@@ -3228,59 +3966,71 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         </Button>
       </Box>
 
-      <NodeActionsContext.Provider value={{ detachService: detachServiceNode }}>
+      <NodeActionsContext.Provider value={{
+        detachService: detachServiceNode,
+        resizeNode,
+        isResizing,
+        setIsResizing
+      }}>
         <GroupHoverContext.Provider value={{ hoveredGroupId }}>
+          <style>{`
+            .react-flow__edges { z-index: 1002 !important; pointer-events: all; }
+            .react-flow__edge { pointer-events: all; }
+            .react-flow__edge-path { pointer-events: all; }
+            .react-flow__nodes { z-index: 1001 !important; }
+          `}</style>
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
+            onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onNodeClick={onNodeClick}
-          onNodeDrag={onNodeDrag}
-          onNodeDragStop={onNodeDragStop}
-          onPaneClick={onPaneClick}
-          onConnect={onConnect}
-          onEdgeClick={handleEdgeClick}
-          onEdgeUpdate={handleEdgeUpdate}
-          onEdgeUpdateStart={handleEdgeUpdateStart}
-          onEdgeUpdateEnd={handleEdgeUpdateEnd}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          fitView
-          fitViewOptions={{
-            padding: 0.2,
-            includeHiddenNodes: false,
-            minZoom: 0.1,
-            maxZoom: 2,
-          }}
-          minZoom={0.05}
-          maxZoom={3}
-          proOptions={{ hideAttribution: true }}
-          nodesDraggable={true}
-          nodesConnectable={true}
-          elementsSelectable={true}
-          edgesUpdatable={true}
-          selectNodesOnDrag={false}
-          defaultEdgeOptions={{
-            type: "custom",
-            style: {
+            onNodeDragStart={onNodeDragStart}
+            onNodeDrag={onNodeDrag}
+            onNodeDragStop={onNodeDragStop}
+            onPaneClick={onPaneClick}
+            onConnect={onConnect}
+            onEdgeClick={handleEdgeClick}
+            onEdgeUpdate={handleEdgeUpdate}
+            onEdgeUpdateStart={handleEdgeUpdateStart}
+            onEdgeUpdateEnd={handleEdgeUpdateEnd}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            fitView
+            fitViewOptions={{
+              padding: 0.2,
+              includeHiddenNodes: false,
+              minZoom: 0.1,
+              maxZoom: 2,
+            }}
+            minZoom={0.05}
+            maxZoom={3}
+            proOptions={{ hideAttribution: true }}
+            nodesDraggable={!isResizing}
+            nodesConnectable={true}
+            elementsSelectable={true}
+            edgesUpdatable={true}
+            selectNodesOnDrag={false}
+            defaultEdgeOptions={{
+              type: "custom",
+              style: {
+                stroke: "#000000",
+                strokeWidth: 2,
+              },
+              markerEnd: undefined,
+            }}
+            connectionLineType={ConnectionLineType.SimpleBezier}
+            connectionMode={ConnectionMode.Loose}
+            connectionRadius={30}
+            connectionLineStyle={{
               stroke: "#000000",
               strokeWidth: 2,
-            },
-            markerEnd: undefined,
-          }}
-          connectionLineType={ConnectionLineType.SimpleBezier}
-          connectionMode={ConnectionMode.Loose}
-          connectionRadius={30}
-          connectionLineStyle={{
-            stroke: "#000000",
-            strokeWidth: 2,
-          }}
-          nodeOrigin={[0, 0]}
-          edgeUpdaterRadius={10}
-          deleteKeyCode={["Backspace", "Delete"]}
-        >
-          <Background color="#f0f0f0" gap={25} size={1} />
+            }}
+            nodeOrigin={[0, 0]}
+            edgeUpdaterRadius={10}
+            deleteKeyCode={["Backspace", "Delete"]}
+          >
+            <Background color="#f0f0f0" gap={25} size={1} />
             <Controls
               showFitView={true}
               showInteractive={true}
