@@ -1113,6 +1113,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
   const redoStackRef = useRef([]);
   const originalDragPosRef = useRef(new Map());
   const positionSaveTimersRef = useRef(new Map());
+  const lastSavedPosRef = useRef(new Map());
   const suppressSavesRef = useRef(false);
   const historyApplyingRef = useRef(false);
   const resizeAnchorRef = useRef({ left: false, top: false });
@@ -1134,14 +1135,33 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
 
   const pendingCodeFrame = useRef(null);
   const dragStartCodeRef = useRef(null);
+  const normalizeForHistory = useCallback((text) => {
+    const lines = (text || "").split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    const pos = [];
+    for (const line of lines) {
+      if (line.startsWith("%% Position:")) pos.push(line);
+    }
+    pos.sort();
+    return pos.join("\n");
+  }, []);
 
   const commitCodeUpdate = useCallback(
     (nextCode, options = { recordHistory: true, baselinePrev: null }) => {
       const finalCode = nextCode ?? "";
       const prev = codeRef.current;
-      if (options.recordHistory && prev !== finalCode) {
-        undoStackRef.current.push(options.baselinePrev ?? prev);
-        redoStackRef.current = [];
+      if (options.recordHistory) {
+        const prevNorm = normalizeForHistory(prev);
+        const finalNorm = normalizeForHistory(finalCode);
+        if (prevNorm !== finalNorm) {
+          const snapshotToPush = options.baselinePrev ?? prev;
+          const top = undoStackRef.current[undoStackRef.current.length - 1];
+          const topNorm = top !== undefined ? normalizeForHistory(top) : undefined;
+          const snapNorm = normalizeForHistory(snapshotToPush);
+          if (topNorm !== snapNorm) {
+            undoStackRef.current.push(snapshotToPush);
+          }
+          redoStackRef.current = [];
+        }
       }
       codeRef.current = finalCode;
 
@@ -1183,27 +1203,40 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       }
       const prev = lastCodeRef.current;
       if (prev !== undefined) {
-        undoStackRef.current.push(prev);
-        redoStackRef.current = [];
+        const prevNorm = normalizeForHistory(prev);
+        const currNorm = normalizeForHistory(code);
+        if (prevNorm !== currNorm) {
+          const top = undoStackRef.current[undoStackRef.current.length - 1];
+          const topNorm = top !== undefined ? normalizeForHistory(top) : undefined;
+          if (topNorm !== prevNorm) {
+            undoStackRef.current.push(prev);
+          }
+          redoStackRef.current = [];
+        }
       }
       lastCodeRef.current = code;
+      suppressSavesRef.current = true;
+      setTimeout(() => {
+        if (!historyApplyingRef.current) suppressSavesRef.current = false;
+      }, 300);
     }
   }, [code]);
 
   const upsertNodePositionInCode = useCallback((nodeId, pos) => {
-    if (suppressSavesRef.current) return;
+    const roundedX = Math.round(pos.x);
+    const roundedY = Math.round(pos.y);
+    const prevPos = lastSavedPosRef.current.get(nodeId);
+    if (prevPos && prevPos.x === roundedX && prevPos.y === roundedY) return;
+
     const currentCode = codeRef.current || "";
     const lines = currentCode.split("\n");
     const filtered = lines.filter(
       (line) => !line.trim().startsWith(`%% Position: ${nodeId} = [`)
     );
-
-    const roundedX = Math.round(pos.x);
-    const roundedY = Math.round(pos.y);
     const positionLine = `%% Position: ${nodeId} = [${roundedX}, ${roundedY}]`;
-
     const updated = [...filtered, positionLine];
     commitCodeUpdate(updated.join("\n"), { recordHistory: false });
+    lastSavedPosRef.current.set(nodeId, { x: roundedX, y: roundedY });
   }, [commitCodeUpdate]);
 
   useEffect(() => {
@@ -1219,13 +1252,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
         positionSaveTimersRef.current.clear();
         setPreventRerender(false);
-        const prev = undoStackRef.current.pop();
-        if (prev !== undefined) {
-          redoStackRef.current.push(codeRef.current);
-          commitCodeUpdate(prev);
-          setStatusMessage("Undo");
-          setTimeout(() => setStatusMessage(""), 1200);
-        }
+        performUndo();
         setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
       } else if (isRedo) {
         e.preventDefault();
@@ -1235,13 +1262,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         positionSaveTimersRef.current.forEach((t) => clearTimeout(t));
         positionSaveTimersRef.current.clear();
         setPreventRerender(false);
-        const next = redoStackRef.current.pop();
-        if (next !== undefined) {
-          undoStackRef.current.push(codeRef.current);
-          commitCodeUpdate(next);
-          setStatusMessage("Redo");
-          setTimeout(() => setStatusMessage(""), 1200);
-        }
+        performRedo();
         setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
       }
     };
@@ -2532,7 +2553,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
 
   const saveNodePositionsToCode = useCallback(
     (updatedNodes, baselinePrev = null) => {
-      if (suppressSavesRef.current) return;
+      if (suppressSavesRef.current && !dragStartCodeRef.current) return;
       if (isSaving) return;
 
       setIsSaving(true);
@@ -2564,6 +2585,9 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
 
           const updatedCode = newLines.join("\n");
           commitCodeUpdate(updatedCode, { recordHistory: !!baselinePrev, baselinePrev });
+          if (baselinePrev) {
+            dragStartCodeRef.current = null;
+          }
           setStatusMessage("Positions saved");
           setIsSaving(false);
 
@@ -2660,6 +2684,14 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
       }
     }
     dragStartCodeRef.current = codeRef.current;
+    const curr = codeRef.current;
+    const top = undoStackRef.current[undoStackRef.current.length - 1];
+    const topNorm = top !== undefined ? normalizeForHistory(top) : undefined;
+    const currNorm = normalizeForHistory(curr);
+    if (topNorm !== currNorm) {
+      undoStackRef.current.push(curr);
+      redoStackRef.current = [];
+    }
     setPreventRerender(true);
   }, [getAbsoluteNodePosition, isResizing]);
 
@@ -2683,7 +2715,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         const timer = setTimeout(() => {
           upsertNodePositionInCode(id, position);
           positionSaveTimersRef.current.delete(id);
-        }, 200);
+        }, 80);
         positionSaveTimersRef.current.set(id, timer);
       };
 
@@ -2815,6 +2847,11 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
         }
 
         saveNodePositionsToCode(updatedNodes, dragStartCodeRef.current);
+        updatedNodes.forEach((n) => {
+          const rx = Math.round(n.position?.x || 0);
+          const ry = Math.round(n.position?.y || 0);
+          lastSavedPosRef.current.set(n.id, { x: rx, y: ry });
+        });
 
         return updatedNodes;
       });
@@ -3339,11 +3376,23 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
     const prev = undoStackRef.current.pop();
     if (prev !== undefined) {
       redoStackRef.current.push(codeRef.current);
-      commitCodeUpdate(prev);
+      commitCodeUpdate(prev, { recordHistory: false });
+      internalCodeUpdateRef.current = true;
+      setCode(prev);
+      try { sessionStorage.setItem("code", prev); } catch {}
+      try {
+        const archData = parseArchitectureCode(prev);
+        const { nodes: flowNodes, edges: flowEdges } = createFlowElements(archData);
+        setNodes(flowNodes);
+        setEdges(flowEdges);
+        setSvg(null);
+        historyApplyingRef.current = false;
+        suppressSavesRef.current = false;
+      } catch {}
       setStatusMessage("Undo");
       setTimeout(() => setStatusMessage(""), 1200);
     }
-    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 300);
   }, [commitCodeUpdate]);
 
   const performRedo = useCallback(() => {
@@ -3355,11 +3404,23 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
     const next = redoStackRef.current.pop();
     if (next !== undefined) {
       undoStackRef.current.push(codeRef.current);
-      commitCodeUpdate(next);
+      commitCodeUpdate(next, { recordHistory: false });
+      internalCodeUpdateRef.current = true;
+      setCode(next);
+      try { sessionStorage.setItem("code", next); } catch {}
+      try {
+        const archData = parseArchitectureCode(next);
+        const { nodes: flowNodes, edges: flowEdges } = createFlowElements(archData);
+        setNodes(flowNodes);
+        setEdges(flowEdges);
+        setSvg(null);
+        historyApplyingRef.current = false;
+        suppressSavesRef.current = false;
+      } catch {}
       setStatusMessage("Redo");
       setTimeout(() => setStatusMessage(""), 1200);
     }
-    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 1200);
+    setTimeout(() => { if (!historyApplyingRef.current) suppressSavesRef.current = false; }, 300);
   }, [commitCodeUpdate]);
 
   useEffect(() => {
@@ -3375,9 +3436,7 @@ const ArchitectureDiagramView = ({ color, fontSizes }) => {
           setEdges(flowEdges);
           setSvg(null);
           if (historyApplyingRef.current) {
-            // Clear suppression once the diagram reflects the applied history
             historyApplyingRef.current = false;
-            suppressSavesRef.current = false;
           }
         } catch (error) {
           console.error("Error initializing diagram:", error);
